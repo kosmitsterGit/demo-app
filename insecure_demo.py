@@ -1,67 +1,44 @@
-pipeline {
-    agent any
+import hashlib
+import json
+import os
+import secrets
+import sqlite3
+import subprocess
 
-    options {
-        timestamps()
-    }
+import requests
+import yaml
 
-    environment {
-        SCANNER_HOME = tool 'sonar-scanner'
-    }
+DB_PASSWORD = os.environ["DB_PASSWORD"]  # секрет берётся из окружения
 
-    stages {
-        stage('Checkout') {
-            steps {
-                checkout scm
-            }
-        }
 
-        stage('Setup') {
-            steps {
-                sh 'python3 -m venv venv'
-                sh './venv/bin/pip install --upgrade pip'
-                sh './venv/bin/pip install -r requirements.txt'
-            }
-        }
+def get_user(username):
+    conn = sqlite3.connect("app.db")
+    return conn.execute(
+        "SELECT * FROM users WHERE name = ?", (username,)
+    ).fetchall()  # параметризованный запрос
 
-        stage('Build') {
-            steps {
-                sh './venv/bin/python -m py_compile app.py'
-            }
-        }
 
-        stage('Test') {
-            steps {
-                sh './venv/bin/pytest --junitxml=result.xml --cov=app --cov-report=xml:coverage.xml'
-            }
-        }
+def ping(host):
+    return subprocess.run(["ping", "-c", "1", host], check=False)  # без shell, аргументы списком
 
-        stage('SonarQube Analysis') {
-            steps {
-                withSonarQubeEnv('sonarqube') {
-                    sh "${SCANNER_HOME}/bin/sonar-scanner"
-                }
-            }
-        }
 
-        stage('Quality Gate') {
-            steps {
-                timeout(time: 5, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
-                }
-            }
-        }
-    }
+def hash_password(password, salt=None):
+    salt = salt or os.urandom(16)
+    digest = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1)
+    return salt, digest
 
-    post {
-        always {
-            junit 'result.xml'
-        }
-        success {
-            echo 'Сборка прошла успешно, Quality Gate пройден'
-        }
-        failure {
-            echo 'Сборка завершилась с ошибкой'
-        }
-    }
-}
+
+def make_reset_token():
+    return secrets.token_urlsafe(32)  # криптостойкий генератор
+
+
+def load_config(text):
+    return yaml.safe_load(text)  # безопасная загрузка
+
+
+def load_session(data):
+    return json.loads(data)  # JSON вместо pickle
+
+
+def fetch(url):
+    return requests.get(url, timeout=10)  # проверка TLS включена, есть таймаут
