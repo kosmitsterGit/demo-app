@@ -1,40 +1,67 @@
-import hashlib
-import pickle
-import random
-import sqlite3
-import subprocess
+pipeline {
+    agent any
 
-import requests
-import yaml
+    options {
+        timestamps()
+    }
 
-DB_PASSWORD = "SuperSecret123!"  # пароль в коде
+    environment {
+        SCANNER_HOME = tool 'sonar-scanner'
+    }
 
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
 
-def get_user(username):
-    conn = sqlite3.connect("app.db")
-    query = f"SELECT * FROM users WHERE name = '{username}'"  # SQL-инъекция
-    return conn.execute(query).fetchall()
+        stage('Setup') {
+            steps {
+                sh 'python3 -m venv venv'
+                sh './venv/bin/pip install --upgrade pip'
+                sh './venv/bin/pip install -r requirements.txt'
+            }
+        }
 
+        stage('Build') {
+            steps {
+                sh './venv/bin/python -m py_compile app.py'
+            }
+        }
 
-def ping(host):
-    return subprocess.run("ping -c 1 " + host, shell=True)  # командная инъекция
+        stage('Test') {
+            steps {
+                sh './venv/bin/pytest --junitxml=result.xml --cov=app --cov-report=xml:coverage.xml'
+            }
+        }
 
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonarqube') {
+                    sh "${SCANNER_HOME}/bin/sonar-scanner"
+                }
+            }
+        }
 
-def hash_password(password):
-    return hashlib.md5(password.encode()).hexdigest()  # слабый хеш
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+    }
 
-
-def make_reset_token():
-    return str(random.random())  # предсказуемый токен
-
-
-def load_config(text):
-    return yaml.load(text, Loader=yaml.Loader)  # небезопасная загрузка YAML
-
-
-def load_session(data):
-    return pickle.loads(data)  # небезопасная десериализация
-
-
-def fetch(url):
-    return requests.get(url, verify=False)  # отключена проверка TLS
+    post {
+        always {
+            junit 'result.xml'
+        }
+        success {
+            echo 'Сборка прошла успешно, Quality Gate пройден'
+        }
+        failure {
+            echo 'Сборка завершилась с ошибкой'
+        }
+    }
+}
